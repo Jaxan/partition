@@ -38,15 +38,17 @@ type (
 		blocks []Block
 		// available is a buffered channel that contains indices of avaialble blocks.
 		available chan int
-		// splitters is a buffered channel that contains the start and end indexes of splitters.
-		splitters chan struct{ begin, end int }
+		// splitgroups is a buffered channel that contains splitgroups.
+		splitgroups chan splitgroup
 		// degree is the number of children a node in the tree can have. It is determined by the
 		// output domain of the function that is used to construct the initial partition
 		degree int
-		// count is the number of blocks in the partition.
-		count int
+		// count is a channel with one integer in it which represents the number of blocks.
+		// This value is stored in a channel so we can guarantee synchronised accesss.
+		count chan int
 	}
 	Block struct {
+		// begin is the index of the first element of this block. It is only set for parent blocks
 		// end is one-past the index in partition of the last element of this block.
 		end int
 		// next and parent are indices of other blocks for implementing the linked list and tree.
@@ -56,6 +58,18 @@ type (
 		// witness is a minimal-length sequence of indices in relations that show that the elements
 		// in the children of this block are inequivalent.
 		witness []int
+	}
+)
+
+// Splitters are implemented as splitgroups. A splitgroup is a set of splitters that have the same
+// parent. A splitter is a range in the partition that corresponds to a node of the splitting tree.
+type (
+	splitgroup struct {
+		splitters []splitter
+		parent    int
+	}
+	splitter struct {
+		begin, end int
 	}
 )
 
@@ -77,37 +91,25 @@ func New(n, degree int, isWitness bool, functions ...func(int) int) *Partition {
 	for i := 1; i < (2*n)-1; i++ {
 		p.available <- i
 	}
-	p.splitters = make(chan struct{ begin, end int }, (2*n)-1)
+	p.splitgroups = make(chan splitgroup, n)
 	p.degree = degree
-	p.count = 1
+	p.count = make(chan int, 1)
+	p.count <- 1
 
 	for class, f := range functions {
 		var wg sync.WaitGroup
-		for b := range p.blockIndices(0) {
+		for b := range p.blockIndices(0, 0) {
 			wg.Add(1)
 			go func(b int) {
 				defer wg.Done()
 				next := p.blocks[b].next
-				begin, _ := p.Range(b) // for splitter
 				isSplit := p.split(b, degree, f)
 				if isSplit {
-					// Construct a parent in the splitting tree.
-					block := p.blocks[b]
-					end, grandparent, depth := block.end, block.parent, block.depth
 					var witness []int
 					if isWitness {
 						witness = []int{class}
 					}
-					parent := Block{end, 0, grandparent, depth, witness}
-					index := <-p.available
-					p.blocks[index] = parent
-					for c := range p.blockIndices(next) {
-						p.blocks[c].parent = index
-						p.blocks[c].depth++
-					}
-					// Add splitter
-					end, _ = p.Range(b)
-					p.splitters <- struct{ begin, end int }{begin, end}
+					p.makeParent(b, next, witness)
 				}
 			}(b)
 		}
@@ -140,89 +142,77 @@ func (p *Partition) Refine(functions ...func(int) int) {
 done: // indentation of labels in go sucks
 	for {
 		select {
-		case sp := <-p.splitters:
-			splitter := p.partition[sp.begin:sp.end]
-			for f := range functions {
-				// subblock maps blocks and functions to the (target) subblock for an element
-				subblock := make(map[int]func(int) int, n)
-				// keep track of created siblings for each splitted block
-				siblings := make(map[int][]int, n)
-				seen := make(map[int]map[int]bool, n)
-				var suffix []int // for witness
-				for _, successor := range splitter {
-					if suffix == nil {
-						parent := p.blocks[successor.b].parent
-						suffix = p.blocks[parent].witness
-					}
-					predecessors := preimage[f][successor.e]
-					for _, e := range predecessors {
-						predecessor := p.partition[p.indices[e]]
-						if p.Len(predecessor.b) == 1 {
-							continue
-						}
-						// Determine target subblock for this element, based on successors block.
-						if subblock[predecessor.b] == nil { // if no mapping exists, create one
-							subblock[predecessor.b] = p.subblockFunction(predecessor.b)
-							siblings[predecessor.b] = make([]int, p.degree)
-							seen[predecessor.b] = make(map[int]bool, p.degree)
-						}
-						sb := subblock[predecessor.b](successor.b)
-						p.move(p.indices[e], sb)
-						if seen[predecessor.b][sb] == false {
-							seen[predecessor.b][sb] = true
-							siblings[predecessor.b] = append(siblings[predecessor.b], sb)
-						}
-					}
-				}
-
-				// Loop over the splitted blocks to see if we need to clean up.
-				var wg sync.WaitGroup
-				for b := range siblings {
-					wg.Add(1)
-					go func(b int) {
-						defer wg.Done()
-						eldest := siblings[b][0]
-						// If the splitted block b is empty, we have to move states from the
-						// eldest sibling back to b. This way, the 'linked list' in p.blocks
-						// keeps working, and block 0 never gets released.
-						if p.blocks[b].end == p.blocks[eldest].end {
-							begin, end := p.Range(eldest)
-							for i := begin; i < end; i++ {
-								p.partition[i].b = b
+		case sg := <-p.splitgroups:
+			suffix := p.blocks[sg.parent].witness
+			for _, sp := range sg.splitters {
+				splitter := p.partition[sp.begin:sp.end]
+				for f := range functions {
+					// subblock maps blocks and functions to the (target) subblock for an element
+					subblock := make(map[int]func(int) int, n)
+					// keep track of created siblings for each splitted block
+					siblings := make(map[int][]int, n)
+					seen := make(map[int]map[int]bool, n)
+					for _, successor := range splitter {
+						predecessors := preimage[f][successor.e]
+						for _, e := range predecessors {
+							predecessor := p.partition[p.indices[e]]
+							if p.Len(predecessor.b) == 1 {
+								continue
 							}
-							p.blocks[b].next = p.blocks[eldest].next
-							p.count--
-							p.available <- eldest
-							siblings[b] = siblings[b][1:]
-							if len(siblings[b]) == 0 {
-								return
+							// Determine target subblock for this element, based on successor.b.
+							if subblock[predecessor.b] == nil { // if no mapping exists, create one
+								subblock[predecessor.b] = p.subblockFunction(predecessor.b)
+								siblings[predecessor.b] = make([]int, p.degree)
+								seen[predecessor.b] = make(map[int]bool, p.degree)
+							}
+							sb := subblock[predecessor.b](successor.b)
+							p.move(p.indices[e], sb)
+							if seen[predecessor.b][sb] == false {
+								seen[predecessor.b][sb] = true
+								siblings[predecessor.b] = append(siblings[predecessor.b], sb)
 							}
 						}
-						// Now b and one or more of its siblings have states, we have to create
-						// a parent for them.
-						block := p.blocks[b]
-						end, grandparent, depth := block.end, block.parent, block.depth
-						witness := append([]int{f}, suffix...)
-						parent := Block{end, 0, grandparent, depth, witness}
-						i := <-p.available
-						p.blocks[i] = parent
-						p.blocks[b].parent = i
-						p.blocks[b].depth++
-						for sb := range siblings[b] {
-							p.blocks[sb].parent = i
-							p.blocks[sb].depth++
-						}
-						// Add splitter
-						spEnd, _ := p.Range(b)
-						spBegin, _ := p.Range(siblings[b][len(siblings[b])-1])
-						p.splitters <- struct{ begin, end int }{spBegin, spEnd}
-					}(b)
-				}
-				wg.Wait()
+					}
 
-				// We are done if each block is a singleton (or if there are no more splitters)
-				if p.count == n {
-					break done
+					// Loop over the splitted blocks to see if we need to clean up.
+					var wg sync.WaitGroup
+					for b := range siblings {
+						wg.Add(1)
+						go func(b int) {
+							defer wg.Done()
+							first := siblings[b][0]
+							// If the splitted block b is empty, we have to move states from the
+							// eldest sibling back to b. This way, the 'linked list' in p.blocks
+							// keeps working, and block 0 never gets released.
+							if p.blocks[b].end == p.blocks[first].end {
+								begin, end := p.Range(first)
+								for i := begin; i < end; i++ {
+									p.partition[i].b = b
+								}
+								p.blocks[b].next = p.blocks[first].next
+								// TODO should we alter count here?
+								p.available <- first
+								siblings[b] = siblings[b][1:]
+								if len(siblings[b]) == 0 {
+									return
+								}
+							}
+							// Now b and one or more of its siblings have states, we have to create
+							// a parent for them.
+							last := siblings[b][len(siblings[b])-1]
+							next := p.blocks[last].next
+							witness := append([]int{f}, suffix...)
+							p.makeParent(b, next, witness)
+						}(b)
+					}
+					wg.Wait()
+
+					// We are done if each block is a singleton.
+					count := <-p.count
+					p.count <- count
+					if count == n {
+						break done
+					}
 				}
 			}
 		default:
@@ -230,7 +220,7 @@ done: // indentation of labels in go sucks
 		}
 	}
 	close(p.available)
-	close(p.splitters)
+	close(p.splitgroups)
 }
 
 // Range returns the index of the first and (one past) the last element in the block with index b.
@@ -308,18 +298,18 @@ func (p *Partition) move(i, target int) {
 	p.move(pivot, target)
 }
 
-// blockIndices returns a channel that contains all block indices until (not including) the provided
-// index. If until is not a block index (or 0), the channel contains all block indices.
-func (p *Partition) blockIndices(until int) <-chan int {
+// blockIndices returns a channel that contains all block indices from and to (not including) the
+// provided index. If to is not a block index (or 0), it contains all blocks starting at from.
+func (p *Partition) blockIndices(from, to int) <-chan int {
 	ch := make(chan int)
-	current := 0
+	current := from
 	go func() {
 		for {
 			// first store the index of the next block to avoid a data race
 			b := p.blocks[current]
 			next := b.next
 			ch <- current
-			if next == until || next == 0 {
+			if next == to || next == 0 {
 				break
 			}
 			current = next
@@ -337,7 +327,31 @@ func (p *Partition) insertAfter(b, i int) {
 	block := Block{end, n, 0, depth, nil}
 	p.blocks[i] = block
 	p.blocks[b].next = i
-	p.count++
+	count := <-p.count
+	count++
+	p.count <- count
+}
+
+// makeParent constructs a parent block, and sets it as parent for all blocks in between first
+// and next, including first, but not including next. Moreover, it adds a splitgroup.
+func (p *Partition) makeParent(first, next int, witness []int) {
+	end, grandparent, depth := p.blocks[first].end, p.blocks[first].parent, p.blocks[first].depth
+	index := <-p.available
+	sg := splitgroup{make([]splitter, p.degree), index}
+	var largest int // index in sg.splitters of splitter we need to remove later
+	for child := range p.blockIndices(first, next) {
+		p.blocks[child].parent = index
+		p.blocks[child].depth++
+		cbegin, cend := p.Range(child)
+		sg.splitters = append(sg.splitters, splitter{cbegin, cend})
+		if largest < p.Len(child) {
+			largest = len(sg.splitters) - 1
+		}
+	}
+	parent := Block{end, next, grandparent, depth, witness}
+	p.blocks[index] = parent
+	sg.splitters = append(sg.splitters[:largest], sg.splitters[largest+1:]...)
+	p.splitgroups <- sg
 }
 
 // subblockFunction constructs a map that returns the subblock for a given block and splitter block.

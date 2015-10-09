@@ -118,7 +118,8 @@ func TestRefine(t *testing.T) {
 		{5, 0, 1, 0},
 		{5, 1, 0, 0},
 	}
-	m := fsm.New(states, inputs)
+	m := fsm.New(states, inputs, outputs)
+
 	for _, t := range transitions {
 		m.SetTransition(t.from, t.input, t.output, t.to)
 	}
@@ -132,19 +133,117 @@ func TestRefine(t *testing.T) {
 	p.Refine(t0, t1)
 
 	blocks := make(map[int][]int, 6)
-	for e := 0; e < 6; e++ {
-		b := p.partition[p.indices[e]].b
-		blocks[b] = append(blocks[b], e)
+	count := 0
+	for _ = range p.blockIndices(0, 0) {
+		count++
 	}
-	if len(blocks) != 6 {
+	if count != 6 {
 		t.Errorf("Not all blocks are singletons (%v).", blocks)
 	}
 
 	// TODO test witnesses and parents
 }
 
+func TestWorstCase(t *testing.T) {
+	for n := 10; n <= 1000; n = n * 10 {
+		f := func(i int) int {
+			if i == n-1 {
+				return 0
+			}
+			return i + 1
+		}
+		class := func(i int) int {
+			if i == n-1 {
+				return 0
+			}
+			return 1
+		}
+		p := New(n, 2, true, class)
+		p.Refine(f)
+		c := 0
+		for _ = range p.blockIndices(0, 0) {
+			c++
+		}
+
+		count := <-p.count
+		if c != count {
+			t.Errorf("Block count is incorrect: expected %d, got %d.", c, count)
+		}
+
+		if c != n {
+			t.Errorf("Block count is incorrect: expected %d, got %d.", c, count)
+		}
+	}
+}
+
+func benchmarkWorstCase(n int, b *testing.B) {
+	t := func(i int) int {
+		if i == 0 {
+			return n - 1
+		}
+		return i - 1
+	}
+	o := func(i int) int {
+		if i == 0 {
+			return 0
+		}
+		return 1
+	}
+	for m := 0; m < b.N; m++ {
+		p := New(n, 2, true, o)
+		p.Refine(t)
+	}
+}
+
+func BenchmarkWorstCase10(b *testing.B)      { benchmarkWorstCase(10, b) }
+func BenchmarkWorstCase20(b *testing.B)      { benchmarkWorstCase(20, b) }
+func BenchmarkWorstCase30(b *testing.B)      { benchmarkWorstCase(30, b) }
+func BenchmarkWorstCase40(b *testing.B)      { benchmarkWorstCase(40, b) }
+func BenchmarkWorstCase50(b *testing.B)      { benchmarkWorstCase(50, b) }
+func BenchmarkWorstCase60(b *testing.B)      { benchmarkWorstCase(60, b) }
+func BenchmarkWorstCase70(b *testing.B)      { benchmarkWorstCase(70, b) }
+func BenchmarkWorstCase80(b *testing.B)      { benchmarkWorstCase(80, b) }
+func BenchmarkWorstCase90(b *testing.B)      { benchmarkWorstCase(90, b) }
+func BenchmarkWorstCase100(b *testing.B)     { benchmarkWorstCase(100, b) }
+func BenchmarkWorstCase200(b *testing.B)     { benchmarkWorstCase(200, b) }
+func BenchmarkWorstCase300(b *testing.B)     { benchmarkWorstCase(300, b) }
+func BenchmarkWorstCase400(b *testing.B)     { benchmarkWorstCase(400, b) }
+func BenchmarkWorstCase500(b *testing.B)     { benchmarkWorstCase(500, b) }
+func BenchmarkWorstCase600(b *testing.B)     { benchmarkWorstCase(600, b) }
+func BenchmarkWorstCase700(b *testing.B)     { benchmarkWorstCase(700, b) }
+func BenchmarkWorstCase800(b *testing.B)     { benchmarkWorstCase(800, b) }
+func BenchmarkWorstCase900(b *testing.B)     { benchmarkWorstCase(900, b) }
+func BenchmarkWorstCase1000(b *testing.B)    { benchmarkWorstCase(1000, b) }
+func BenchmarkWorstCase2000(b *testing.B)    { benchmarkWorstCase(2000, b) }
+func BenchmarkWorstCase3000(b *testing.B)    { benchmarkWorstCase(3000, b) }
+func BenchmarkWorstCase4000(b *testing.B)    { benchmarkWorstCase(4000, b) }
+func BenchmarkWorstCase5000(b *testing.B)    { benchmarkWorstCase(5000, b) }
+func BenchmarkWorstCase6000(b *testing.B)    { benchmarkWorstCase(6000, b) }
+func BenchmarkWorstCase7000(b *testing.B)    { benchmarkWorstCase(7000, b) }
+func BenchmarkWorstCase8000(b *testing.B)    { benchmarkWorstCase(8000, b) }
+func BenchmarkWorstCase9000(b *testing.B)    { benchmarkWorstCase(9000, b) }
+func BenchmarkWorstCase10000(b *testing.B)   { benchmarkWorstCase(10000, b) }
+func BenchmarkWorstCase20000(b *testing.B)   { benchmarkWorstCase(20000, b) }
+func BenchmarkWorstCase30000(b *testing.B)   { benchmarkWorstCase(30000, b) }
+func BenchmarkWorstCase40000(b *testing.B)   { benchmarkWorstCase(40000, b) }
+func BenchmarkWorstCase50000(b *testing.B)   { benchmarkWorstCase(50000, b) }
+func BenchmarkWorstCase60000(b *testing.B)   { benchmarkWorstCase(60000, b) }
+func BenchmarkWorstCase70000(b *testing.B)   { benchmarkWorstCase(70000, b) }
+func BenchmarkWorstCase80000(b *testing.B)   { benchmarkWorstCase(80000, b) }
+func BenchmarkWorstCase90000(b *testing.B)   { benchmarkWorstCase(90000, b) }
+func BenchmarkWorstCase100000(b *testing.B)  { benchmarkWorstCase(100000, b) }
+func BenchmarkWorstCase200000(b *testing.B)  { benchmarkWorstCase(200000, b) }
+func BenchmarkWorstCase300000(b *testing.B)  { benchmarkWorstCase(300000, b) }
+func BenchmarkWorstCase400000(b *testing.B)  { benchmarkWorstCase(400000, b) }
+func BenchmarkWorstCase500000(b *testing.B)  { benchmarkWorstCase(500000, b) }
+func BenchmarkWorstCase600000(b *testing.B)  { benchmarkWorstCase(600000, b) }
+func BenchmarkWorstCase700000(b *testing.B)  { benchmarkWorstCase(700000, b) }
+func BenchmarkWorstCase800000(b *testing.B)  { benchmarkWorstCase(800000, b) }
+func BenchmarkWorstCase900000(b *testing.B)  { benchmarkWorstCase(900000, b) }
+func BenchmarkWorstCase1000000(b *testing.B) { benchmarkWorstCase(1000000, b) }
+
 func generateFSM(states, inputs, outputs int) *fsm.FSM {
-	m := fsm.New(states, inputs)
+	m := fsm.New(states, inputs, outputs)
 	for from := 0; from < states; from++ {
 		for input := 0; input < inputs; input++ {
 			output := rand.Intn(outputs)
