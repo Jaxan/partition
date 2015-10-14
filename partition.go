@@ -118,6 +118,123 @@ func New(n, degree int, isWitness bool, functions ...func(int) int) *Partition {
 	return p
 }
 
+// The commented out Refine function below marks elements that should be moved, instead of copying
+// the splitters. This leads to a significantly worse permance (than the one that is in use, see
+// below). This might be because there is some bugs in the code below.
+/*
+func (p *Partition) Refine(functions ...func(int) int) {
+	n := len(p.partition)
+
+	// Construct preimage sets for all functions.
+	preimages := make([]func(int) []int, len(functions))
+	var wg sync.WaitGroup
+	for f := range functions {
+		wg.Add(1)
+		go func(f int) {
+			defer wg.Done()
+			preimages[f] = Preimage(functions[f], n)
+		}(f)
+	}
+	wg.Wait()
+
+	// Refine the partition until it is stable.
+done:
+	for {
+		select {
+		case sg := <-p.splitgroups:
+			for f := range functions {
+				// Construct the witness
+				suffix := p.blocks[sg.parent].witness
+				witness := append([]int{f}, suffix...)
+
+				// First mark the elements that should be moved because of this splitgroup.
+				type mark struct{ e, cls int }
+				marked := make(chan mark, n)
+				count := make(map[int]int, n)
+				degree := make(map[int]int, p.degree)
+				for cls, sp := range sg.splitters {
+					seen := make(map[int]bool, n)
+					for _, successor := range p.partition[sp.begin:sp.end] {
+						for _, e := range preimages[f](successor.e) {
+							marked <- mark{e, cls}
+							b := p.partition[p.indices[e]].b
+							count[b]++
+							if !seen[b] {
+								degree[b]++
+								seen[b] = true
+							}
+						}
+					}
+				}
+				wg.Wait()
+
+				// Create workers that will move the marked elements to subblocks.
+				work := make(map[int]chan mark, len(count))
+				for b := range count {
+					if degree[b] == 1 && count[b] == p.Len(b) { // we don't have to split this block
+						continue
+					}
+					work[b] = make(chan mark) //TODO buffered?
+					wg.Add(1)
+					go func(b int) {
+						defer wg.Done()
+						next := p.blocks[b].next
+						subblocks := make(map[int]int, p.degree)
+						last := b
+						for m := range work[b] {
+							e := m.e
+							i := p.indices[e]
+							cls := m.cls
+							sb, exists := subblocks[cls]
+							if !exists {
+								sb = <-p.available
+								subblocks[cls] = sb
+								p.insertAfter(last, sb)
+								last = sb
+							}
+							p.move(i, sb)
+						}
+						p.makeParent(b, next, witness)
+					}(b)
+				}
+
+				// Now move marked elements if a worker exists for their block.
+			marks:
+				for {
+					select {
+					case m := <-marked:
+						b := p.partition[p.indices[m.e]].b
+						ch, exists := work[b]
+						if exists {
+							ch <- m
+						}
+					default:
+						break marks
+					}
+				}
+
+				// Close worker channels
+				for _, ch := range work {
+					close(ch)
+				}
+				wg.Wait() // and wait for them to be closed, so parents are created
+
+				// We are done if each block is a singleton.
+				c := <-p.count
+				p.count <- c
+				if c == n {
+					break done
+				}
+			}
+		default:
+			break done
+		}
+	}
+	close(p.available)
+	close(p.splitgroups)
+}
+*/
+
 // TODO description
 func (p *Partition) Refine(functions ...func(int) int) {
 	n := len(p.partition)
@@ -126,10 +243,10 @@ func (p *Partition) Refine(functions ...func(int) int) {
 	preimage := make([][][]int, len(functions))
 	var wg sync.WaitGroup
 	for f := range functions {
-		preimage[f] = make([][]int, n)
 		wg.Add(1)
 		go func(f int) {
 			defer wg.Done()
+			preimage[f] = make([][]int, n)
 			for i := 0; i < n; i++ {
 				j := functions[f](i)
 				preimage[f][j] = append(preimage[f][j], i)
@@ -144,9 +261,15 @@ done: // indentation of labels in go sucks
 		select {
 		case sg := <-p.splitgroups:
 			suffix := p.blocks[sg.parent].witness
-			for _, sp := range sg.splitters {
-				splitter := p.partition[sp.begin:sp.end]
-				for f := range functions {
+			// Construct splitters prior to splitting, because the order of a block might change.
+			splitters := make([][]struct{ e, b int }, len(sg.splitters))
+			// TODO
+			for i, sp := range sg.splitters {
+				splitters[i] = p.partition[sp.begin:sp.end]
+			}
+			for f := range functions {
+				// TODO
+				for _, splitter := range splitters {
 					// subblock maps blocks and functions to the (target) subblock for an element
 					subblock := make(map[int]func(int) int, n)
 					// keep track of created siblings for each splitted block
@@ -301,9 +424,9 @@ func (p *Partition) move(i, target int) {
 // blockIndices returns a channel that contains all block indices from and to (not including) the
 // provided index. If to is not a block index (or 0), it contains all blocks starting at from.
 func (p *Partition) blockIndices(from, to int) <-chan int {
-	ch := make(chan int)
-	current := from
+	ch := make(chan int, len(p.blocks))
 	go func() {
+		current := from
 		for {
 			// first store the index of the next block to avoid a data race
 			b := p.blocks[current]
@@ -337,15 +460,17 @@ func (p *Partition) insertAfter(b, i int) {
 func (p *Partition) makeParent(first, next int, witness []int) {
 	end, grandparent, depth := p.blocks[first].end, p.blocks[first].parent, p.blocks[first].depth
 	index := <-p.available
-	sg := splitgroup{make([]splitter, p.degree), index}
+	sg := splitgroup{make([]splitter, 0, p.degree), index}
 	var largest int // index in sg.splitters of splitter we need to remove later
+	var length int  // number of elements in the largest block so far
 	for child := range p.blockIndices(first, next) {
 		p.blocks[child].parent = index
 		p.blocks[child].depth++
 		cbegin, cend := p.Range(child)
 		sg.splitters = append(sg.splitters, splitter{cbegin, cend})
-		if largest < p.Len(child) {
+		if length < p.Len(child) {
 			largest = len(sg.splitters) - 1
+			length = p.Len(child)
 		}
 	}
 	parent := Block{end, next, grandparent, depth, witness}
@@ -368,5 +493,18 @@ func (p *Partition) subblockFunction(b int) func(int) int {
 			last = i
 		}
 		return m[sb]
+	}
+}
+
+// Preimage returns the preimage of f. This is a function that takes an element i in the range [0,n)
+// and returns a slice of elements j for which f(j) = i.
+func Preimage(f func(int) int, n int) func(int) []int {
+	p := make([][]int, n)
+	for i := 0; i < n; i++ {
+		j := f(i)
+		p[j] = append(p[j], i)
+	}
+	return func(j int) []int {
+		return p[j]
 	}
 }
