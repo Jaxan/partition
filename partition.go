@@ -10,7 +10,7 @@ import "sync"
 // that of finding the coarsest refinement under a set of functions for a given partition. Given a
 // partition P of N and a set of functions F, where each function has the form f: N->N, we construct
 // the coarsest refinement Q of P such that elements in the same block behave equivalent under F,
-// i.e.: for each pair of blocks B, B' of Q either B ⊆ F'(B') or B ∩ E'(B') = ∅.
+// i.e.: for each pair of blocks B, B' of Q either B ⊆ f(B') or B ∩ f(B') = ∅.
 //
 // In addition, the partition constructed forms a splitting tree.
 // A splitting tree for P is a rooted tree T with the following properties:
@@ -21,8 +21,8 @@ import "sync"
 // - Each inner node u is associated with a minimal-length sequence of relation references that
 // 	 provide evidence that the elements contained in different children of u are inequivalent
 //
-// The sequences associated to inner nodes provides a minimal-length 'witness' for the inequality of
-// different blocks.
+// The sequence associated to an inner node provides a minimal-length 'witness' for the inequivalence of
+// different child blocks.
 type (
 	Partition struct {
 		// indices is a slice of indices in the partition, indexed by the elements from U.
@@ -36,7 +36,7 @@ type (
 		// a linked list to find the indexes of current blocks in the partition, and a tree to
 		// represent the splitting tree.
 		blocks []Block
-		// available is a buffered channel that contains indices of avaialble blocks.
+		// available is a buffered channel that contains indices of available blocks.
 		available chan int
 		// splitgroups is a buffered channel that contains splitgroups.
 		splitgroups chan splitgroup
@@ -119,8 +119,8 @@ func New(n, degree int, isWitness bool, functions ...func(int) int) *Partition {
 }
 
 // The commented out Refine function below marks elements that should be moved, instead of copying
-// the splitters. This leads to a significantly worse permance (than the one that is in use, see
-// below). This might be because there is some bugs in the code below.
+// the splitters. This leads to a significantly worse performance (than the one that is in use, see
+// below). This might be because there are some bugs in the code below.
 /*
 func (p *Partition) Refine(functions ...func(int) int) {
 	n := len(p.partition)
@@ -365,33 +365,47 @@ func (p *Partition) Len(b int) int {
 }
 
 // Splits the elements in block b according to their class, and returns true if a split is made.
-func (p *Partition) split(b int, degree int, class func(int) int) (isSplit bool) {
+// Time complexity (amortised): O(degree + len(p.blocks[b]) * (1 + O(class)))
+func (p *Partition) split(b int, degree int, class func(int) int) bool {
 	begin, end := p.Range(b)
-	// a slice of subblock indices, indexed by class (0 means empty, j+1 means index j)
-	subblocks := make([]int, degree)
+	// a slice of subblocks. Each element contains the indices that will go into the same subblock.
+	subblocks := make([][]int, degree)
+	for i := begin; i < end; i++ {
+		e := p.partition[i].e
+		cls := class(e)
+                // This call to append should have amortised constant time:
+		subblocks[cls] = append(subblocks[cls], e)
+	}
+        if len(subblocks[class(p.partition[begin].e)]) == end - begin {
+                // All states are in the same subblock. No moves are needed.
+                return false
+        }
 	// the index of the last subblock added to the partition
 	last := b
 	first := true
-	for i := begin; i < end; i++ {
-		cls := class(p.partition[i].e)
-		if subblocks[cls] == 0 {
-			if first {
-				subblocks[cls] = b + 1
-				first = false
-			} else {
-				sb := <-p.available
-				subblocks[cls] = sb + 1
+	pos := end
+	for cls := 0 ; cls < degree ; cls++ {
+		states := subblocks[cls]
+		if len(states) > 0 {
+			sb := b
+			if ! first {
+				sb = <-p.available
 				p.insertAfter(last, sb)
+                                p.blocks[sb].end = pos
+				last = sb
 			}
-			last = subblocks[cls] - 1
+                        first = false
+			for _, st := range states {
+                                pos--
+				p.partition[pos] = struct{ e, b int }{st, sb}
+				p.indices[st] = pos
+			}
 		}
-		sb := subblocks[cls] - 1
-		p.move(i, sb)
 	}
-	if last != b {
-		isSplit = true
-	}
-	return
+        if first || last == b {
+                panic("split: Assertion failed. Internal error.")
+        }
+        return true
 }
 
 // Recursively moves element with index i to the next block until it is in the target block.
