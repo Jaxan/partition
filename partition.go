@@ -2,6 +2,8 @@
 // integers [0, n) with respect to one or more functions of type N->N.
 package partition
 
+// import "sort" // for binary search Search(), used in Moore's algorithm
+
 // A partition P of N is a set of pairwise disjoint subsets of N, called blocks, whose union is N.
 // If P and Q are partitions of N, Q is a refinement of P if every block of Q is contained in a
 // block of P. As a special case, every partition is a refinement of itself. The problem we solve is
@@ -19,25 +21,26 @@ package partition
 // - Each inner node u is associated with a minimal-length sequence of relation references that
 // 	 provide evidence that the values contained in different children of u are inequivalent
 //
-// The sequences associated to inner nodes provides a minimal-length 'witness' for the inequality of
+// The sequence associated to inner nodes provides a minimal-length 'witness' for the inequivalence of
 // different blocks.
 type (
 	Partition struct {
-		indices   []int       // a slice of indices to elements, indexed by integers [0,n).
-		elements  []element   // a partition of the elements, and their blocks.
-		splitters chan *block // a buffered channel of inner blocks that are 'splitgroups'.
-		size      int         // the number of (leaf) blocks in the partition.
+		indices   []int     // a slice of indices to elements, indexed by integers [0,n).
+		elements  []element // a partition of the elements, and their blocks.
+		splitters chan int  // a buffered channel of inner blocks that are 'splitgroups'.
+		size      int       // the number of (leaf) blocks in the partition.
+		blocks    []block   // a slice of blocks, maximum length 2n-1
 	}
 	element struct {
 		value int
-		block *block
+		block int
 	}
 	block struct {
-		begin, end int    // interval of elements that belong to this block.
-		level      int    // number of times the elements of this block have been refined.
-		parent     *block // a pointer to the parent of this block
-		borders    []int  // can be used to infer intervals of (direct) children.
-		witness    []int  // sequence that distinguishes pairs for which this block is the lca.
+		begin, end int   // interval of elements that belong to this block.
+		level      int   // number of times the elements of this block have been refined.
+		parent     int   // a pointer to the parent of this block
+		borders    []int // can be used to infer intervals of (direct) children.
+		witness    []int // sequence that distinguishes pairs for which this block is the lca.
 	}
 )
 
@@ -48,23 +51,24 @@ func New(n int, max int, fs ...func(int) int) *Partition {
 	// Initialize partition.
 	p := new(Partition)
 
-	b := &block{0, n, 0, nil, nil, nil}
-	p.size++
+	p.blocks = make([]block, 1, 2*n-1)
+	p.blocks[0] = block{0, n, 0, -1, nil, nil}
+	p.size = 1
 
 	p.indices = make([]int, n)
 	p.elements = make([]element, n)
 	for i := 0; i < n; i++ {
 		p.indices[i] = i
-		p.elements[i] = element{i, b}
+		p.elements[i] = element{i, 0}
 	}
 
-	p.splitters = make(chan *block, n)
+	p.splitters = make(chan int, n)
 
 	for prefix, class := range fs {
 		witness := []int{prefix}
 		for b := range p.Blocks(0, n) {
 			parent := p.split(b, max, class, witness)
-			if parent != nil {
+			if parent >= 0 {
 				p.splitters <- parent
 			}
 		}
@@ -80,8 +84,8 @@ func (p *Partition) Refine(fs ...func(int) int) {
 
 	// Construct preimage for all functions
 	preimages := make([]func(int) []int, len(fs))
-	for i, f := range fs {
-		preimages[i] = preimage(f, n)
+	for prefix, f := range fs {
+		preimages[prefix] = preimage(f, n)
 	}
 
 	// Refine until there are no groups of splitters left, or if all blocks are singletons.
@@ -91,10 +95,12 @@ done:
 		case splitter := <-p.splitters:
 
 			// Identify largest subblock of splitter.
-			largest := 0
-			delta := 0
-			begin := splitter.begin
-			for cls, border := range append(splitter.borders, splitter.end) {
+			// The loop below does not check the last subblock of splitter;
+			// therefore, we put it here.
+			largest := len(p.blocks[splitter].borders)
+			delta := p.blocks[splitter].end - p.blocks[splitter].borders[largest-1]
+			begin := p.blocks[splitter].begin
+			for cls, border := range p.blocks[splitter].borders {
 				if border-begin > delta {
 					delta = border - begin
 					largest = cls
@@ -102,77 +108,95 @@ done:
 				begin = border
 			}
 
-			for f := range fs {
-				witness := append([]int{f}, splitter.witness...)
+			for prefix := range fs {
+				witness := append([]int{prefix}, p.blocks[splitter].witness...)
 
 				// Mark the predecessors of all but the largest subblock of the splitter.
-				marks := make(map[*block][][]int, p.size)
-				count := make(map[*block]int, p.size)
-				classes := make(map[*block]int, p.size)
-				for cls := 0; cls < len(splitter.borders)+1; cls++ {
+				marks := make([][][]int, len(p.blocks[splitter].borders)+1)
+				// marks[class][block] is a list of values in block whose successors are in the class-th child of the splitter
+				count := make([]int, len(p.blocks))
+				// count[block] is the number of values in block that have been marked
+				markblocks := make([]int, 0, len(p.blocks))
+				for cls := 0; cls < len(marks); cls++ {
 					if cls == largest {
 						continue
 					}
-					begin := splitter.begin
+					marks[cls] = make([][]int, len(p.blocks))
+					begin := p.blocks[splitter].begin
 					if cls != 0 {
-						begin = splitter.borders[cls-1]
+						begin = p.blocks[splitter].borders[cls-1]
 					}
-					end := splitter.end
-					if cls != len(splitter.borders) {
-						end = splitter.borders[cls]
+					end := p.blocks[splitter].end
+					if cls != len(p.blocks[splitter].borders) {
+						end = p.blocks[splitter].borders[cls]
 					}
-					seen := make(map[*block]bool, p.size)
 					for i := begin; i < end; i++ {
-						suc := p.value(i)
-						for _, val := range preimages[f](suc) {
-							b := p.Block(suc)
-							_, exists := marks[b]
-							if !exists {
-								marks[b] = make([][]int, len(splitter.borders)+1)
+						for _, val := range preimages[prefix](p.value(i)) {
+							b := p.Block(val)
+							if p.blocks[b].end-p.blocks[b].begin == 1 {
+								// singleton block cannot be split
+								continue
 							}
-							marks[b][cls] = append(marks[b][cls], val)
+							marks[cls][b] = append(marks[cls][b], val)
+							if count[b] == 0 {
+								markblocks = append(markblocks, b)
+							}
 							count[b]++
-							if !seen[b] {
-								classes[b]++
-								seen[b] = true
-							}
 						}
 					}
 				}
 
 				// Move the marked values to subblocks.
-				for b, refinement := range marks {
-					if count[b] == b.end-b.begin && classes[b] == 1 {
-						continue
+				for _, b := range markblocks {
+					var parent int
+					pos := p.blocks[b].end - count[b]
+					if pos == p.blocks[b].begin {
+						// the implicit child is empty.
+						parent = b
+					} else {
+						parent = len(p.blocks)
+						p.blocks = append(p.blocks, p.blocks[b])
+						p.blocks[parent].borders = []int{pos}
+
+						p.blocks[b].end = pos
+						p.blocks[b].parent = parent
 					}
 
-					// A split has been made, so make a parent.
-					parent := &block{b.begin, b.end, b.level, b.parent, make([]int, 0), witness}
-					b.parent = parent
-
-					pos := b.end
-					for cls := 0; cls < len(refinement); cls++ {
-						if len(refinement[cls]) == 0 {
+					first := true
+					for cls := 0; cls < len(marks); cls++ {
+						if cls == largest || marks[cls][b] == nil {
+							// || len(marks[cls][b]) == 0
 							continue
 						}
-						sb := &block{pos - len(refinement[cls]), pos, parent.level + 1, parent, nil, nil}
-						p.size++
-						parent.borders = append([]int{pos}, parent.borders...)
+						if first {
+							first = false
+							if len(marks[cls][b]) == p.blocks[parent].end-p.blocks[parent].begin {
+								// not a real split
+								break
+							}
+							p.blocks[parent].witness = witness
+							p.splitters <- parent
+							if pos > p.blocks[parent].begin {
+								p.size++
+							}
+						} else {
+							p.blocks[parent].borders = append(p.blocks[parent].borders, pos)
+							p.size++
+						}
+						sb := len(p.blocks)
+						p.blocks = append(p.blocks, block{pos, pos + len(marks[cls][b]), p.blocks[parent].level + 1, parent, nil, nil})
 
-						// Decrease pos and swap the value at the current pos with val.
-						for _, val := range refinement[cls] {
-							pos--
+						// swap the value at the current pos with val and increase pos
+						for _, val := range marks[cls][b] {
 							i := p.index(val)
 							other := p.value(pos)
 							p.elements[pos] = element{val, sb}
 							p.indices[val] = pos
-							p.elements[i] = element{other, b}
+							p.elements[i].value = other
 							p.indices[other] = i
+							pos++
 						}
 					}
-
-					// Update the end position and the parent of the original block.
-					b.end = pos
 				}
 				if p.size == n {
 					break done
@@ -191,22 +215,20 @@ done:
 func (p *Partition) Refine(fs ...func(int) int) {
 	n := len(p.elements)
 
-	// Refine until there are no groups of splitters left, or if all blocks are singletons.
+	// Refine until there are no groups of splitters left, or until all blocks are singletons.
 done:
 	for {
 		select {
 		case splitter := <-p.splitters:
 			for prefix, f := range fs {
-				witness := append([]int{prefix}, splitter.witness...)
+				witness := append([]int{prefix}, p.blocks[splitter].witness...)
 				for b := range p.Blocks(0, n) {
 
 					// Figure out the range of the successors of elements in b.
 					begin := n
 					end := 0
-					for i := b.begin; i < b.end; i++ {
-						val := p.value(i)
-						suc := f(val)
-						j := p.index(suc)
+					for i := p.blocks[b].begin; i < p.blocks[b].end; i++ {
+						j := p.index(f(p.value(i)))
 						if j < begin {
 							begin = j
 						}
@@ -216,23 +238,16 @@ done:
 					}
 
 					// If all successors of elements in b are in the splitgroup, try to split.
-					if begin >= splitter.begin && end <= splitter.end {
+					if begin >= p.blocks[splitter].begin && end <= p.blocks[splitter].end {
 
 						// class returns the index of the splitter in which the successor of e is.
-						class := func(val int) (cls int) {
-							suc := f(val)
-							i := p.index(suc)
-							for _, border := range splitter.borders {
-								if i < border {
-									return
-								}
-								cls++
-							}
-							return
+						class := func(val int) int {
+							x := p.index(f(val))
+                                                        return sort.Search(len(p.blocks[splitter].borders), func(i int) bool { return p.blocks[splitter].borders[i] > x })
 						}
 
-						parent := p.split(b, len(splitter.borders)+1, class, witness)
-						if parent != nil {
+						parent := p.split(b, len(p.blocks[splitter].borders)+1, class, witness)
+						if parent >= 0 {
 							p.splitters <- parent
 						}
 
@@ -254,25 +269,30 @@ done:
 // split puts the elements in block b in different subblocks based on the class of their value. It
 // is assumed that the range of the class function is [0, max). Returns the parent block if the
 // block was split, or nil if it was not.
-func (p *Partition) split(b *block, max int, class func(int) int, witness []int) (parent *block) {
+func (p *Partition) split(b int, max int, class func(int) int, witness []int) (parent int) {
+	parent = -1
 	refinement := make([][]int, max)
-	for i := b.begin; i < b.end; i++ {
+	begin := p.blocks[b].begin
+	end := p.blocks[b].end
+	level := p.blocks[b].level
+	for i := begin; i < end; i++ {
 		val := p.elements[i].value
 		cls := class(val)
 		refinement[cls] = append(refinement[cls], val)
 	}
 
-	if len(refinement[class(p.elements[b.begin].value)]) == b.end-b.begin {
+	if len(refinement[class(p.elements[begin].value)]) == end-begin {
 		// All elements have the same class. No moves are needed.
 		return
 	}
 
 	// A split has been made, so make a parent.
-	parent = &block{b.begin, b.end, b.level, b.parent, make([]int, 0), witness}
-	b.parent = parent
+	parent = len(p.blocks)
+	p.blocks = append(p.blocks, block{begin, end, level, p.blocks[b].parent, make([]int, 0), witness})
+	p.blocks[b].parent = parent
 
 	// Construct subblocks and move elements to them.
-	pos := b.end
+	pos := begin
 	first := true
 	for cls := 0; cls < max; cls++ {
 		if len(refinement[cls]) == 0 {
@@ -280,18 +300,19 @@ func (p *Partition) split(b *block, max int, class func(int) int, witness []int)
 		}
 		sb := b
 		if !first { // make a new block.
-			sb = &block{pos - len(refinement[cls]), pos, parent.level + 1, parent, nil, nil}
-			parent.borders = append([]int{pos}, parent.borders...)
+			sb = len(p.blocks)
+			p.blocks = append(p.blocks, block{pos, pos + len(refinement[cls]), level + 1, parent, nil, nil})
+			p.blocks[parent].borders = append(p.blocks[parent].borders, pos)
 			p.size++
 		} else { // modify interval and level of b == sb.
-			sb.begin = pos - len(refinement[cls])
-			sb.level = parent.level + 1
+			p.blocks[sb].end = pos + len(refinement[cls])
+			p.blocks[sb].level = level + 1
+			first = false
 		}
-		first = false
 		for _, val := range refinement[cls] { // move element to subblock.
-			pos--
 			p.elements[pos] = element{val, sb}
 			p.indices[val] = pos
+			pos++
 		}
 	}
 	return
@@ -301,8 +322,8 @@ func (p *Partition) split(b *block, max int, class func(int) int, witness []int)
 // begin-end, such that the block of element[begin] is the first block on the channel, and the block
 // of element[end] is the first block that is NOT in the channel.  It is safe to split the blocks
 // that are read from the channel (i.e. the next block will not be a newly created subblock).
-func (p *Partition) Blocks(begin, end int) <-chan *block {
-	ch := make(chan *block)
+func (p *Partition) Blocks(begin, end int) <-chan int {
+	ch := make(chan int)
 	go func() {
 		defer close(ch)
 		n := len(p.elements)
@@ -311,7 +332,7 @@ func (p *Partition) Blocks(begin, end int) <-chan *block {
 		}
 		for i := begin; i < end; {
 			b := p.elements[i].block
-			i = b.end
+			i = p.blocks[b].end
 			ch <- b
 		}
 	}()
@@ -319,9 +340,9 @@ func (p *Partition) Blocks(begin, end int) <-chan *block {
 }
 
 // block returns the block for the provided value.
-func (p *Partition) Block(val int) *block {
+func (p *Partition) Block(val int) int {
 	if val >= len(p.elements) {
-		return nil
+		return -1
 	}
 	i := p.indices[val]
 	return p.elements[i].block
@@ -347,17 +368,17 @@ func (p *Partition) index(val int) int {
 // values' elements.
 func (p *Partition) Witness(val, other int) []int {
 	lca := p.LCA(val, other)
-	return lca.witness
+	return p.blocks[lca].witness
 }
 
 // LCA returns the block that is the 'lowest common ancestor' of the provided values. This is the
 // last block in which all of the values were present.
-func (p *Partition) LCA(vals ...int) *block {
+func (p *Partition) LCA(vals ...int) int {
 	n := len(p.elements)
 	begin := n
 	end := 0
 	for _, val := range vals {
-		if val >= n {
+		if val < 0 || val >= n {
 			continue
 		}
 		i := p.index(val)
@@ -369,23 +390,24 @@ func (p *Partition) LCA(vals ...int) *block {
 		}
 	}
 	if begin > end {
-		return nil
+		return -1
 	}
 	return p.lca(p.elements[begin].block, p.elements[end].block)
 }
 
 // lca iteratively searches for the block that is the lowest common ancestor of the two provided
 // blocks.
-func (p *Partition) lca(b, o *block) *block {
-	if b == o {
-		return b
+func (p *Partition) lca(b, o int) int {
+	//if p.blocks[o].end <= p.blocks[b].begin {
+	//	b, o = o, b
+	//}
+	for p.blocks[b].end <= p.blocks[o].begin {
+		b = p.blocks[b].parent
+		if b < 0 {
+			panic("Block parent relation corrupted")
+		}
 	}
-	if b.level < o.level {
-		return p.lca(b, o.parent)
-	} else if b.level > o.level {
-		return p.lca(b.parent, o)
-	} // else b.level == o.level
-	return p.lca(b.parent, o.parent)
+	return b
 }
 
 // preimage returns the preimage function of f. This is a function that takes an element i in the
