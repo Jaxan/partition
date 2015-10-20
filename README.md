@@ -10,3 +10,5 @@ In addition, the partition constructed forms a splitting tree. A splitting tree 
 The sequence associated to inner nodes provides a minimal-length 'witness' for the inequivalence of different blocks.
 
 In this implementation, all nodes of the splitting tree are represented as blocks.
+
+This package contains implementations for two strategies for refining an initial partition. This strategy is set by the `strategy` flag in the `Refine()` method. If `strategy == 0`, Hopcroft's 'smaller half' strategy is used. This strategy has a worst case time complexity of O(kn log n), where k is the number of functions for which the blocks should be equivalent. If `strategy == 1` Moore's strategy is used. This strategy has a worst case time complexity of O(kn^2).
