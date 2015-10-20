@@ -77,6 +77,13 @@ func TestRefine(t *testing.T) {
 	t0, _ := m.TransitionFunction(0)
 	t1, _ := m.TransitionFunction(1)
 
+	if HOPCROFT != 0 {
+		t.Errorf("Constant HOPCROFT is incorrectly set (%v).", HOPCROFT)
+	}
+	if MOORE != 1 {
+		t.Errorf("Constant HOPCROFT is incorrectly set (%v).", MOORE)
+	}
+
 	p := New(states, outputs, o0, o1)
 	p.Refine(HOPCROFT, t0, t1)
 
