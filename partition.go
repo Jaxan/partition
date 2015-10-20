@@ -83,19 +83,19 @@ const MOORE int = 1
 // Refine constructs the coarsest refinement of the current partition such that elements in the same
 // block behave equivalently under the set of functions fs (that map elements from [0,n) to [0,n),
 // i.e.: for each pair of blocks B, B' of Q and each function f either B ⊆ f(B') or B ∩ f(B') = ∅.
-func (p *Partition) Refine(method int, fs ...func(int) int) {
-	switch method {
+func (p *Partition) Refine(strategy int, fs ...func(int) int) {
+	switch strategy {
 	case HOPCROFT:
 		p.refineHopcroft(fs...)
 	case MOORE:
 		p.refineMoore(fs...)
 	default:
-		panic("Undefined method.")
+		panic("Undefined strategy.")
 	}
 }
 
 // refineHopcroft is an implementation of Refine that uses Hopcroft's 'process the smaller half'
-// method. This method has a theoretical time complexity of O(pn log n), where p == len(fs).
+// strategy. This strategy has a theoretical time complexity of O(pn log n), where p == len(fs).
 func (p *Partition) refineHopcroft(fs ...func(int) int) {
 	n := len(p.elements)
 
