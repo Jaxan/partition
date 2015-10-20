@@ -2,7 +2,7 @@ package partition
 
 import (
 	"gitlab.science.ru.nl/rick/fsm"
-	//"math/rand"
+	"math/rand"
 	"testing"
 )
 
@@ -78,10 +78,16 @@ func TestRefine(t *testing.T) {
 	t1, _ := m.TransitionFunction(1)
 
 	p := New(states, outputs, o0, o1)
-	p.Refine(t0, t1)
+	p.Refine(HOPCROFT, t0, t1)
+
+	q := New(states, outputs, o0, o1)
+	q.Refine(MOORE, t0, t1)
 
 	if p.size != 6 {
-		t.Errorf("Not all blocks are singletons (%v).", p.size)
+		t.Errorf("Not all blocks are singletons in Hopcroft (%v).", p.size)
+	}
+	if q.size != 6 {
+		t.Errorf("Not all blocks are singletons in Moore (%v).", p.size)
 	}
 
 	tests := []struct {
@@ -114,12 +120,15 @@ func TestRefine(t *testing.T) {
 	for _, test := range tests {
 		witness := p.Witness(test.val, test.other)
 		if !equal(witness, test.witness) {
-			t.Errorf("Incorrect witness for %d and %d: %v.", test.val, test.other, witness)
+			t.Errorf("Incorrect witness for %d and %d in Hopcroft: %v.", test.val, test.other, witness)
+		}
+		witness = q.Witness(test.val, test.other)
+		if !equal(witness, test.witness) {
+			t.Errorf("Incorrect witness for %d and %d in Moore: %v.", test.val, test.other, witness)
 		}
 	}
 }
 
-/*
 func generateFSM(states, inputs, outputs int) *fsm.FSM {
 	m := fsm.New(states, inputs, outputs)
 	for from := 0; from < states; from++ {
@@ -144,59 +153,105 @@ func benchmarkPartition(method, states, inputs, outputs int, b *testing.B) {
 			o[input], _ = m.OutputFunction(input)
 			t[input], _ = m.TransitionFunction(input)
 		}
-		b.StartTimer()
 		p := New(states, outputs, o...)
+		b.StartTimer()
 		p.Refine(method, t...)
 	}
 }
 
-const inputs int = 10
-const outputs int = 10
+const INPUTS int = 10
+const OUTPUTS int = 10
 
-func BenchmarkPartition10(b *testing.B)      { benchmarkPartition(MOORE, 10, inputs, outputs, b) }
-func BenchmarkPartition20(b *testing.B)      { benchmarkPartition(MOORE, 20, inputs, outputs, b) }
-func BenchmarkPartition30(b *testing.B)      { benchmarkPartition(MOORE, 30, inputs, outputs, b) }
-func BenchmarkPartition40(b *testing.B)      { benchmarkPartition(MOORE, 40, inputs, outputs, b) }
-func BenchmarkPartition50(b *testing.B)      { benchmarkPartition(MOORE, 50, inputs, outputs, b) }
-func BenchmarkPartition60(b *testing.B)      { benchmarkPartition(MOORE, 60, inputs, outputs, b) }
-func BenchmarkPartition70(b *testing.B)      { benchmarkPartition(MOORE, 70, inputs, outputs, b) }
-func BenchmarkPartition80(b *testing.B)      { benchmarkPartition(MOORE, 80, inputs, outputs, b) }
-func BenchmarkPartition90(b *testing.B)      { benchmarkPartition(MOORE, 90, inputs, outputs, b) }
-func BenchmarkPartition100(b *testing.B)     { benchmarkPartition(MOORE, 100, inputs, outputs, b) }
-func BenchmarkPartition200(b *testing.B)     { benchmarkPartition(MOORE, 200, inputs, outputs, b) }
-func BenchmarkPartition300(b *testing.B)     { benchmarkPartition(MOORE, 300, inputs, outputs, b) }
-func BenchmarkPartition400(b *testing.B)     { benchmarkPartition(MOORE, 400, inputs, outputs, b) }
-func BenchmarkPartition500(b *testing.B)     { benchmarkPartition(MOORE, 500, inputs, outputs, b) }
-func BenchmarkPartition600(b *testing.B)     { benchmarkPartition(MOORE, 600, inputs, outputs, b) }
-func BenchmarkPartition700(b *testing.B)     { benchmarkPartition(MOORE, 700, inputs, outputs, b) }
-func BenchmarkPartition800(b *testing.B)     { benchmarkPartition(MOORE, 800, inputs, outputs, b) }
-func BenchmarkPartition900(b *testing.B)     { benchmarkPartition(MOORE, 900, inputs, outputs, b) }
-func BenchmarkPartition1000(b *testing.B)    { benchmarkPartition(MOORE, 1000, inputs, outputs, b) }
-func BenchmarkPartition2000(b *testing.B)    { benchmarkPartition(MOORE, 2000, inputs, outputs, b) }
-func BenchmarkPartition3000(b *testing.B)    { benchmarkPartition(MOORE, 3000, inputs, outputs, b) }
-func BenchmarkPartition4000(b *testing.B)    { benchmarkPartition(MOORE, 4000, inputs, outputs, b) }
-func BenchmarkPartition5000(b *testing.B)    { benchmarkPartition(MOORE, 5000, inputs, outputs, b) }
-func BenchmarkPartition6000(b *testing.B)    { benchmarkPartition(MOORE, 6000, inputs, outputs, b) }
-func BenchmarkPartition7000(b *testing.B)    { benchmarkPartition(MOORE, 7000, inputs, outputs, b) }
-func BenchmarkPartition8000(b *testing.B)    { benchmarkPartition(MOORE, 8000, inputs, outputs, b) }
-func BenchmarkPartition9000(b *testing.B)    { benchmarkPartition(MOORE, 9000, inputs, outputs, b) }
-func BenchmarkPartition10000(b *testing.B)   { benchmarkPartition(MOORE, 10000, inputs, outputs, b) }
-func BenchmarkPartition20000(b *testing.B)   { benchmarkPartition(MOORE, 20000, inputs, outputs, b) }
-func BenchmarkPartition30000(b *testing.B)   { benchmarkPartition(MOORE, 30000, inputs, outputs, b) }
-func BenchmarkPartition40000(b *testing.B)   { benchmarkPartition(MOORE, 40000, inputs, outputs, b) }
-func BenchmarkPartition50000(b *testing.B)   { benchmarkPartition(MOORE, 50000, inputs, outputs, b) }
-func BenchmarkPartition60000(b *testing.B)   { benchmarkPartition(MOORE, 60000, inputs, outputs, b) }
-func BenchmarkPartition70000(b *testing.B)   { benchmarkPartition(MOORE, 70000, inputs, outputs, b) }
-func BenchmarkPartition80000(b *testing.B)   { benchmarkPartition(MOORE, 80000, inputs, outputs, b) }
-func BenchmarkPartition90000(b *testing.B)   { benchmarkPartition(MOORE, 90000, inputs, outputs, b) }
-func BenchmarkPartition100000(b *testing.B)  { benchmarkPartition(MOORE, 100000, inputs, outputs, b) }
-func BenchmarkPartition200000(b *testing.B)  { benchmarkPartition(MOORE, 200000, inputs, outputs, b) }
-func BenchmarkPartition300000(b *testing.B)  { benchmarkPartition(MOORE, 300000, inputs, outputs, b) }
-func BenchmarkPartition400000(b *testing.B)  { benchmarkPartition(MOORE, 400000, inputs, outputs, b) }
-func BenchmarkPartition500000(b *testing.B)  { benchmarkPartition(MOORE, 500000, inputs, outputs, b) }
-func BenchmarkPartition600000(b *testing.B)  { benchmarkPartition(MOORE, 600000, inputs, outputs, b) }
-func BenchmarkPartition700000(b *testing.B)  { benchmarkPartition(MOORE, 700000, inputs, outputs, b) }
-func BenchmarkPartition800000(b *testing.B)  { benchmarkPartition(MOORE, 800000, inputs, outputs, b) }
-func BenchmarkPartition900000(b *testing.B)  { benchmarkPartition(MOORE, 900000, inputs, outputs, b) }
-func BenchmarkPartition1000000(b *testing.B) { benchmarkPartition(MOORE, 1000000, inputs, outputs, b) }
-*/
+func BenchmarkMoore10(b *testing.B)      { benchmarkPartition(HOPCROFT, 10, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore20(b *testing.B)      { benchmarkPartition(HOPCROFT, 20, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore30(b *testing.B)      { benchmarkPartition(HOPCROFT, 30, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore40(b *testing.B)      { benchmarkPartition(HOPCROFT, 40, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore50(b *testing.B)      { benchmarkPartition(HOPCROFT, 50, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore60(b *testing.B)      { benchmarkPartition(HOPCROFT, 60, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore70(b *testing.B)      { benchmarkPartition(HOPCROFT, 70, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore80(b *testing.B)      { benchmarkPartition(HOPCROFT, 80, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore90(b *testing.B)      { benchmarkPartition(HOPCROFT, 90, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore100(b *testing.B)     { benchmarkPartition(HOPCROFT, 100, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore200(b *testing.B)     { benchmarkPartition(HOPCROFT, 200, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore300(b *testing.B)     { benchmarkPartition(HOPCROFT, 300, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore400(b *testing.B)     { benchmarkPartition(HOPCROFT, 400, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore500(b *testing.B)     { benchmarkPartition(HOPCROFT, 500, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore600(b *testing.B)     { benchmarkPartition(HOPCROFT, 600, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore700(b *testing.B)     { benchmarkPartition(HOPCROFT, 700, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore800(b *testing.B)     { benchmarkPartition(HOPCROFT, 800, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore900(b *testing.B)     { benchmarkPartition(HOPCROFT, 900, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore1000(b *testing.B)    { benchmarkPartition(HOPCROFT, 1000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore2000(b *testing.B)    { benchmarkPartition(HOPCROFT, 2000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore3000(b *testing.B)    { benchmarkPartition(HOPCROFT, 3000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore4000(b *testing.B)    { benchmarkPartition(HOPCROFT, 4000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore5000(b *testing.B)    { benchmarkPartition(HOPCROFT, 5000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore6000(b *testing.B)    { benchmarkPartition(HOPCROFT, 6000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore7000(b *testing.B)    { benchmarkPartition(HOPCROFT, 7000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore8000(b *testing.B)    { benchmarkPartition(HOPCROFT, 8000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore9000(b *testing.B)    { benchmarkPartition(HOPCROFT, 9000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore10000(b *testing.B)   { benchmarkPartition(HOPCROFT, 10000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore20000(b *testing.B)   { benchmarkPartition(HOPCROFT, 20000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore30000(b *testing.B)   { benchmarkPartition(HOPCROFT, 30000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore40000(b *testing.B)   { benchmarkPartition(HOPCROFT, 40000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore50000(b *testing.B)   { benchmarkPartition(HOPCROFT, 50000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore60000(b *testing.B)   { benchmarkPartition(HOPCROFT, 60000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore70000(b *testing.B)   { benchmarkPartition(HOPCROFT, 70000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore80000(b *testing.B)   { benchmarkPartition(HOPCROFT, 80000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore90000(b *testing.B)   { benchmarkPartition(HOPCROFT, 90000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore100000(b *testing.B)  { benchmarkPartition(HOPCROFT, 100000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore200000(b *testing.B)  { benchmarkPartition(HOPCROFT, 200000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore300000(b *testing.B)  { benchmarkPartition(HOPCROFT, 300000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore400000(b *testing.B)  { benchmarkPartition(HOPCROFT, 400000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore500000(b *testing.B)  { benchmarkPartition(HOPCROFT, 500000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore600000(b *testing.B)  { benchmarkPartition(HOPCROFT, 600000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore700000(b *testing.B)  { benchmarkPartition(HOPCROFT, 700000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore800000(b *testing.B)  { benchmarkPartition(HOPCROFT, 800000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore900000(b *testing.B)  { benchmarkPartition(HOPCROFT, 900000, INPUTS, OUTPUTS, b) }
+func BenchmarkMoore1000000(b *testing.B) { benchmarkPartition(HOPCROFT, 1000000, INPUTS, OUTPUTS, b) }
+
+func BenchmarkHopcroft10(b *testing.B)      { benchmarkPartition(HOPCROFT, 10, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft20(b *testing.B)      { benchmarkPartition(HOPCROFT, 20, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft30(b *testing.B)      { benchmarkPartition(HOPCROFT, 30, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft40(b *testing.B)      { benchmarkPartition(HOPCROFT, 40, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft50(b *testing.B)      { benchmarkPartition(HOPCROFT, 50, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft60(b *testing.B)      { benchmarkPartition(HOPCROFT, 60, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft70(b *testing.B)      { benchmarkPartition(HOPCROFT, 70, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft80(b *testing.B)      { benchmarkPartition(HOPCROFT, 80, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft90(b *testing.B)      { benchmarkPartition(HOPCROFT, 90, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft100(b *testing.B)     { benchmarkPartition(HOPCROFT, 100, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft200(b *testing.B)     { benchmarkPartition(HOPCROFT, 200, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft300(b *testing.B)     { benchmarkPartition(HOPCROFT, 300, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft400(b *testing.B)     { benchmarkPartition(HOPCROFT, 400, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft500(b *testing.B)     { benchmarkPartition(HOPCROFT, 500, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft600(b *testing.B)     { benchmarkPartition(HOPCROFT, 600, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft700(b *testing.B)     { benchmarkPartition(HOPCROFT, 700, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft800(b *testing.B)     { benchmarkPartition(HOPCROFT, 800, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft900(b *testing.B)     { benchmarkPartition(HOPCROFT, 900, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft1000(b *testing.B)    { benchmarkPartition(HOPCROFT, 1000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft2000(b *testing.B)    { benchmarkPartition(HOPCROFT, 2000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft3000(b *testing.B)    { benchmarkPartition(HOPCROFT, 3000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft4000(b *testing.B)    { benchmarkPartition(HOPCROFT, 4000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft5000(b *testing.B)    { benchmarkPartition(HOPCROFT, 5000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft6000(b *testing.B)    { benchmarkPartition(HOPCROFT, 6000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft7000(b *testing.B)    { benchmarkPartition(HOPCROFT, 7000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft8000(b *testing.B)    { benchmarkPartition(HOPCROFT, 8000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft9000(b *testing.B)    { benchmarkPartition(HOPCROFT, 9000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft10000(b *testing.B)   { benchmarkPartition(HOPCROFT, 10000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft20000(b *testing.B)   { benchmarkPartition(HOPCROFT, 20000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft30000(b *testing.B)   { benchmarkPartition(HOPCROFT, 30000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft40000(b *testing.B)   { benchmarkPartition(HOPCROFT, 40000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft50000(b *testing.B)   { benchmarkPartition(HOPCROFT, 50000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft60000(b *testing.B)   { benchmarkPartition(HOPCROFT, 60000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft70000(b *testing.B)   { benchmarkPartition(HOPCROFT, 70000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft80000(b *testing.B)   { benchmarkPartition(HOPCROFT, 80000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft90000(b *testing.B)   { benchmarkPartition(HOPCROFT, 90000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft100000(b *testing.B)  { benchmarkPartition(HOPCROFT, 100000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft200000(b *testing.B)  { benchmarkPartition(HOPCROFT, 200000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft300000(b *testing.B)  { benchmarkPartition(HOPCROFT, 300000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft400000(b *testing.B)  { benchmarkPartition(HOPCROFT, 400000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft500000(b *testing.B)  { benchmarkPartition(HOPCROFT, 500000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft600000(b *testing.B)  { benchmarkPartition(HOPCROFT, 600000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft700000(b *testing.B)  { benchmarkPartition(HOPCROFT, 700000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft800000(b *testing.B)  { benchmarkPartition(HOPCROFT, 800000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft900000(b *testing.B)  { benchmarkPartition(HOPCROFT, 900000, INPUTS, OUTPUTS, b) }
+func BenchmarkHopcroft1000000(b *testing.B) { benchmarkPartition(HOPCROFT, 1000000, INPUTS, OUTPUTS, b) }
