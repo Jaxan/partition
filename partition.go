@@ -24,7 +24,7 @@ import "sort" // for binary search Search(), used in Moore's algorithm
 // The sequence associated to inner nodes provides a minimal-length 'witness' for the inequivalence
 // of different blocks.
 //
-// In this implementation, nodes of the splitting tree are represented as blocks.
+// In this implementation, all nodes of the splitting tree are represented as blocks.
 type (
 	Partition struct {
 		indices   []int     // a slice of indices to elements, indexed by integers [0,n).
