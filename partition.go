@@ -2,7 +2,7 @@
 // integers [0, n) with respect to one or more functions of type N->N.
 package partition
 
-// import "sort" // for binary search Search(), used in Moore's algorithm
+import "sort" // for binary search Search(), used in Moore's algorithm
 
 // A partition P of N is a set of pairwise disjoint subsets of N, called blocks, whose union is N.
 // If P and Q are partitions of N, Q is a refinement of P if every block of Q is contained in a
@@ -21,15 +21,17 @@ package partition
 // - Each inner node u is associated with a minimal-length sequence of relation references that
 // 	 provide evidence that the values contained in different children of u are inequivalent
 //
-// The sequence associated to inner nodes provides a minimal-length 'witness' for the inequivalence of
-// different blocks.
+// The sequence associated to inner nodes provides a minimal-length 'witness' for the inequivalence
+// of different blocks.
+//
+// In this implementation, nodes of the splitting tree are represented as blocks.
 type (
 	Partition struct {
 		indices   []int     // a slice of indices to elements, indexed by integers [0,n).
 		elements  []element // a partition of the elements, and their blocks.
 		splitters chan int  // a buffered channel of inner blocks that are 'splitgroups'.
 		size      int       // the number of (leaf) blocks in the partition.
-		blocks    []block   // a slice of blocks, maximum length 2n-1
+		blocks    []block   // a slice of blocks/ nodes of the splitting tree, maximum length 2n-1.
 	}
 	element struct {
 		value int
@@ -37,22 +39,21 @@ type (
 	}
 	block struct {
 		begin, end int   // interval of elements that belong to this block.
-		level      int   // number of times the elements of this block have been refined.
 		parent     int   // a pointer to the parent of this block
 		borders    []int // can be used to infer intervals of (direct) children.
 		witness    []int // sequence that distinguishes pairs for which this block is the lca.
 	}
 )
 
-// New constructs an initial partition for integers in the set N=[0,n). Two integers x and y in N
+// New constructs an initial partition for integers in the set [0,n). Two integers x and y
 // are in the same block if they belong to the same class for all provided functions. It is assumed
-// that the range of the class functions is [0, max) (i.e. f(x) < max for all x in N).
+// that the range of the class functions is [0, max) (i.e. f(x) < max for all x in [0,n)).
 func New(n int, max int, fs ...func(int) int) *Partition {
 	// Initialize partition.
 	p := new(Partition)
 
 	p.blocks = make([]block, 1, 2*n-1)
-	p.blocks[0] = block{0, n, 0, -1, nil, nil}
+	p.blocks[0] = block{0, n, -1, nil, nil}
 	p.size = 1
 
 	p.indices = make([]int, n)
@@ -76,10 +77,26 @@ func New(n int, max int, fs ...func(int) int) *Partition {
 	return p
 }
 
-// Makes the partition stable with respect to functions fs that map elements from N to N.
-// This implementation uses Hopcroft's 'process the smaller half' method.
-// TODO: this method contains a bug because it does not pass the tests.
-func (p *Partition) Refine(fs ...func(int) int) {
+const HOPCROFT int = 0
+const MOORE int = 1
+
+// Refine constructs the coarsest refinement of the current partition such that elements in the same
+// block behave equivalently under the set of functions fs (that map elements from [0,n) to [0,n),
+// i.e.: for each pair of blocks B, B' of Q and each function f either B ⊆ f(B') or B ∩ f(B') = ∅.
+func (p *Partition) Refine(method int, fs ...func(int) int) {
+	switch method {
+	case HOPCROFT:
+		p.refineHopcroft(fs...)
+	case MOORE:
+		p.refineMoore(fs...)
+	default:
+		panic("Undefined method.")
+	}
+}
+
+// refineHopcroft is an implementation of Refine that uses Hopcroft's 'process the smaller half'
+// method. This method has a theoretical time complexity of O(pn log n), where p == len(fs).
+func (p *Partition) refineHopcroft(fs ...func(int) int) {
 	n := len(p.elements)
 
 	// Construct preimage for all functions
@@ -184,9 +201,9 @@ done:
 							p.size++
 						}
 						sb := len(p.blocks)
-						p.blocks = append(p.blocks, block{pos, pos + len(marks[cls][b]), p.blocks[parent].level + 1, parent, nil, nil})
+						p.blocks = append(p.blocks, block{pos, pos + len(marks[cls][b]), parent, nil, nil})
 
-						// swap the value at the current pos with val and increase pos
+						// Swap the value at the current pos with val and increase pos
 						for _, val := range marks[cls][b] {
 							i := p.index(val)
 							other := p.value(pos)
@@ -209,10 +226,9 @@ done:
 	close(p.splitters)
 }
 
-/*
-// Makes the partition stable with respect to functions fs that map elements from N to N.
-// This implementation iterates over all elements of all blocks for all splitters.
-func (p *Partition) Refine(fs ...func(int) int) {
+// refineMoore is an implementation of Refine that iterates over all elements of all blocks and
+// splitters. This strategy was proposed by Moore. It has a theoretical time complexity of O(pn²).
+func (p *Partition) refineMoore(fs ...func(int) int) {
 	n := len(p.elements)
 
 	// Refine until there are no groups of splitters left, or until all blocks are singletons.
@@ -243,7 +259,7 @@ done:
 						// class returns the index of the splitter in which the successor of e is.
 						class := func(val int) int {
 							x := p.index(f(val))
-                                                        return sort.Search(len(p.blocks[splitter].borders), func(i int) bool { return p.blocks[splitter].borders[i] > x })
+							return sort.Search(len(p.blocks[splitter].borders), func(i int) bool { return p.blocks[splitter].borders[i] > x })
 						}
 
 						parent := p.split(b, len(p.blocks[splitter].borders)+1, class, witness)
@@ -264,17 +280,15 @@ done:
 	}
 	close(p.splitters)
 }
-*/
 
 // split puts the elements in block b in different subblocks based on the class of their value. It
-// is assumed that the range of the class function is [0, max). Returns the parent block if the
-// block was split, or nil if it was not.
+// is assumed that the range of the class function is [0, max). Returns the parent block identifier
+// if the block was split, or -1 if it was not.
 func (p *Partition) split(b int, max int, class func(int) int, witness []int) (parent int) {
 	parent = -1
 	refinement := make([][]int, max)
 	begin := p.blocks[b].begin
 	end := p.blocks[b].end
-	level := p.blocks[b].level
 	for i := begin; i < end; i++ {
 		val := p.elements[i].value
 		cls := class(val)
@@ -288,7 +302,7 @@ func (p *Partition) split(b int, max int, class func(int) int, witness []int) (p
 
 	// A split has been made, so make a parent.
 	parent = len(p.blocks)
-	p.blocks = append(p.blocks, block{begin, end, level, p.blocks[b].parent, make([]int, 0), witness})
+	p.blocks = append(p.blocks, block{begin, end, p.blocks[b].parent, make([]int, 0), witness})
 	p.blocks[b].parent = parent
 
 	// Construct subblocks and move elements to them.
@@ -301,12 +315,11 @@ func (p *Partition) split(b int, max int, class func(int) int, witness []int) (p
 		sb := b
 		if !first { // make a new block.
 			sb = len(p.blocks)
-			p.blocks = append(p.blocks, block{pos, pos + len(refinement[cls]), level + 1, parent, nil, nil})
+			p.blocks = append(p.blocks, block{pos, pos + len(refinement[cls]), parent, nil, nil})
 			p.blocks[parent].borders = append(p.blocks[parent].borders, pos)
 			p.size++
-		} else { // modify interval and level of b == sb.
+		} else { // modify interval b == sb.
 			p.blocks[sb].end = pos + len(refinement[cls])
-			p.blocks[sb].level = level + 1
 			first = false
 		}
 		for _, val := range refinement[cls] { // move element to subblock.
@@ -318,9 +331,9 @@ func (p *Partition) split(b int, max int, class func(int) int, witness []int) (p
 	return
 }
 
-// Blocks returns a read channel that contains pointers to blocks for the elements in the interval
+// Blocks returns a read channel that contains block identifiers for the elements in the interval
 // begin-end, such that the block of element[begin] is the first block on the channel, and the block
-// of element[end] is the first block that is NOT in the channel.  It is safe to split the blocks
+// of element[end] is the first block that is not in the channel.  It is safe to split the blocks
 // that are read from the channel (i.e. the next block will not be a newly created subblock).
 func (p *Partition) Blocks(begin, end int) <-chan int {
 	ch := make(chan int)
@@ -333,15 +346,16 @@ func (p *Partition) Blocks(begin, end int) <-chan int {
 		for i := begin; i < end; {
 			b := p.elements[i].block
 			i = p.blocks[b].end
+			// It is safe to split block b, because the end of b is stored beforehand.
 			ch <- b
 		}
 	}()
 	return ch
 }
 
-// block returns the block for the provided value.
+// block returns the block identifier for the provided value, or -1 if the value is out of range.
 func (p *Partition) Block(val int) int {
-	if val >= len(p.elements) {
+	if val >= len(p.elements) || val < 0 {
 		return -1
 	}
 	i := p.indices[val]
@@ -363,16 +377,16 @@ func (p *Partition) index(val int) int {
 	return p.indices[val]
 }
 
-// Witness returns a minimal-length sequence that distinguishes the provided pair of values, or nil
-// if the values are in the same block. This is the sequence that is stored on the LCA of the
-// values' elements.
+// Witness returns a minimal-length sequence of function indexes that distinguishes the provided
+// pair of values, or nil if the values are in the same block. This is the sequence that is stored
+// on the LCA of the values' elements.
 func (p *Partition) Witness(val, other int) []int {
 	lca := p.LCA(val, other)
 	return p.blocks[lca].witness
 }
 
 // LCA returns the block that is the 'lowest common ancestor' of the provided values. This is the
-// last block in which all of the values were present.
+// lowest block in which all of the values were present.
 func (p *Partition) LCA(vals ...int) int {
 	n := len(p.elements)
 	begin := n
@@ -396,16 +410,10 @@ func (p *Partition) LCA(vals ...int) int {
 }
 
 // lca iteratively searches for the block that is the lowest common ancestor of the two provided
-// blocks.
+// blocks b and o. It is assumed that p.blocks[b].begin < p.blocks[o].end upon calling.
 func (p *Partition) lca(b, o int) int {
-	//if p.blocks[o].end <= p.blocks[b].begin {
-	//	b, o = o, b
-	//}
 	for p.blocks[b].end <= p.blocks[o].begin {
 		b = p.blocks[b].parent
-		if b < 0 {
-			panic("Block parent relation corrupted")
-		}
 	}
 	return b
 }
