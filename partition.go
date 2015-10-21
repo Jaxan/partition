@@ -40,7 +40,7 @@ type (
 	block struct {
 		begin, end int   // interval of elements that belong to this block.
 		parent     int   // a pointer to the parent of this block
-		borders    []int // can be used to infer intervals of (direct) children.
+		pivots     []int // can be used to infer intervals of (direct) children.
 		witness    []int // sequence that distinguishes pairs for which this block is the lca.
 	}
 )
@@ -114,22 +114,22 @@ done:
 			// Identify largest subblock of splitter.
 			// The loop below does not check the last subblock of splitter;
 			// therefore, we put it here.
-			largest := len(p.blocks[splitter].borders)
-			delta := p.blocks[splitter].end - p.blocks[splitter].borders[largest-1]
+			largest := len(p.blocks[splitter].pivots)
+			delta := p.blocks[splitter].end - p.blocks[splitter].pivots[largest-1]
 			begin := p.blocks[splitter].begin
-			for cls, border := range p.blocks[splitter].borders {
-				if border-begin > delta {
-					delta = border - begin
+			for cls, pivot := range p.blocks[splitter].pivots {
+				if pivot-begin > delta {
+					delta = pivot - begin
 					largest = cls
 				}
-				begin = border
+				begin = pivot
 			}
 
 			for prefix := range fs {
 				witness := append([]int{prefix}, p.blocks[splitter].witness...)
 
 				// Mark the predecessors of all but the largest subblock of the splitter.
-				marks := make([][][]int, len(p.blocks[splitter].borders)+1)
+				marks := make([][][]int, len(p.blocks[splitter].pivots)+1)
 				// marks[class][block] is a list of values in block whose successors are in the class-th child of the splitter
 				count := make([]int, len(p.blocks))
 				// count[block] is the number of values in block that have been marked
@@ -141,11 +141,11 @@ done:
 					marks[cls] = make([][]int, len(p.blocks))
 					begin := p.blocks[splitter].begin
 					if cls != 0 {
-						begin = p.blocks[splitter].borders[cls-1]
+						begin = p.blocks[splitter].pivots[cls-1]
 					}
 					end := p.blocks[splitter].end
-					if cls != len(p.blocks[splitter].borders) {
-						end = p.blocks[splitter].borders[cls]
+					if cls != len(p.blocks[splitter].pivots) {
+						end = p.blocks[splitter].pivots[cls]
 					}
 					for i := begin; i < end; i++ {
 						for _, val := range preimages[prefix](p.value(i)) {
@@ -173,7 +173,7 @@ done:
 					} else {
 						parent = len(p.blocks)
 						p.blocks = append(p.blocks, p.blocks[b])
-						p.blocks[parent].borders = []int{pos}
+						p.blocks[parent].pivots = []int{pos}
 
 						p.blocks[b].end = pos
 						p.blocks[b].parent = parent
@@ -197,7 +197,7 @@ done:
 								p.size++
 							}
 						} else {
-							p.blocks[parent].borders = append(p.blocks[parent].borders, pos)
+							p.blocks[parent].pivots = append(p.blocks[parent].pivots, pos)
 							p.size++
 						}
 						sb := len(p.blocks)
@@ -259,10 +259,10 @@ done:
 						// class returns the index of the splitter in which the successor of e is.
 						class := func(val int) int {
 							x := p.index(f(val))
-							return sort.Search(len(p.blocks[splitter].borders), func(i int) bool { return p.blocks[splitter].borders[i] > x })
+							return sort.Search(len(p.blocks[splitter].pivots), func(i int) bool { return p.blocks[splitter].pivots[i] > x })
 						}
 
-						parent := p.split(b, len(p.blocks[splitter].borders)+1, class, witness)
+						parent := p.split(b, len(p.blocks[splitter].pivots)+1, class, witness)
 						if parent >= 0 {
 							p.splitters <- parent
 						}
@@ -316,7 +316,7 @@ func (p *Partition) split(b int, max int, class func(int) int, witness []int) (p
 		if !first { // make a new block.
 			sb = len(p.blocks)
 			p.blocks = append(p.blocks, block{pos, pos + len(refinement[cls]), parent, nil, nil})
-			p.blocks[parent].borders = append(p.blocks[parent].borders, pos)
+			p.blocks[parent].pivots = append(p.blocks[parent].pivots, pos)
 			p.size++
 		} else { // modify interval b == sb.
 			p.blocks[sb].end = pos + len(refinement[cls])
