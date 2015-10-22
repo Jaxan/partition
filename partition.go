@@ -18,7 +18,7 @@ import "sort" // for binary search Search(), used in Moore's algorithm
 // - The root is labeled by N
 // - The label of each inner node is partitioned by the labels of its children
 // - The leaves are labeled by the (current) blocks of P
-// - Each inner node u is associated with a minimal-length sequence of relation references that
+// - Each inner node u is associated with a minimal-length linked list of relation references that
 // 	 provide evidence that the values contained in different children of u are inequivalent
 //
 // The sequence associated to inner nodes provides a minimal-length 'witness' for the inequivalence
@@ -38,10 +38,14 @@ type (
 		block int
 	}
 	block struct {
-		begin, end int   // interval of elements that belong to this block.
-		parent     int   // a pointer to the parent of this block
-		pivots     []int // can be used to infer intervals of (direct) children.
-		witness    []int // sequence that distinguishes pairs for which this block is the lca.
+		begin, end int      // interval of elements that belong to this block.
+		parent     int      // a pointer to the parent of this block.
+		pivots     []int    // can be used to infer intervals of (direct) children.
+		witness    *witness // distinguishes pairs for which this block is the lca.
+	}
+	witness struct {
+		prefix int      // the witness' prefix.
+		suffix *witness // a pointer to the witness that contains the suffix (or nil).
 	}
 )
 
@@ -66,9 +70,9 @@ func New(n int, max int, fs ...func(int) int) *Partition {
 	p.splitters = make(chan int, n)
 
 	for prefix, class := range fs {
-		witness := []int{prefix}
+		w := &witness{prefix, nil}
 		for b := range p.Blocks(0, n) {
-			parent := p.split(b, max, class, witness)
+			parent := p.split(b, max, class, w)
 			if parent >= 0 {
 				p.splitters <- parent
 			}
@@ -126,7 +130,7 @@ done:
 			}
 
 			for prefix := range fs {
-				witness := append([]int{prefix}, p.blocks[splitter].witness...)
+				w := &witness{prefix, p.blocks[splitter].witness}
 
 				// Mark the predecessors of all but the largest subblock of the splitter.
 				marks := make([][][]int, len(p.blocks[splitter].pivots)+1)
@@ -191,7 +195,7 @@ done:
 								// not a real split
 								break
 							}
-							p.blocks[parent].witness = witness
+							p.blocks[parent].witness = w
 							p.splitters <- parent
 							if pos > p.blocks[parent].begin {
 								p.size++
@@ -237,7 +241,7 @@ done:
 		select {
 		case splitter := <-p.splitters:
 			for prefix, f := range fs {
-				witness := append([]int{prefix}, p.blocks[splitter].witness...)
+				w := &witness{prefix, p.blocks[splitter].witness}
 				for b := range p.Blocks(0, n) {
 
 					// Figure out the range of the successors of elements in b.
@@ -262,7 +266,7 @@ done:
 							return sort.Search(len(p.blocks[splitter].pivots), func(i int) bool { return p.blocks[splitter].pivots[i] > x })
 						}
 
-						parent := p.split(b, len(p.blocks[splitter].pivots)+1, class, witness)
+						parent := p.split(b, len(p.blocks[splitter].pivots)+1, class, w)
 						if parent >= 0 {
 							p.splitters <- parent
 						}
@@ -284,7 +288,7 @@ done:
 // split puts the elements in block b in different subblocks based on the class of their value. It
 // is assumed that the range of the class function is [0, max). Returns the parent block identifier
 // if the block was split, or -1 if it was not.
-func (p *Partition) split(b int, max int, class func(int) int, witness []int) (parent int) {
+func (p *Partition) split(b int, max int, class func(int) int, w *witness) (parent int) {
 	parent = -1
 	refinement := make([][]int, max)
 	begin := p.blocks[b].begin
@@ -302,7 +306,7 @@ func (p *Partition) split(b int, max int, class func(int) int, witness []int) (p
 
 	// A split has been made, so make a parent.
 	parent = len(p.blocks)
-	p.blocks = append(p.blocks, block{begin, end, p.blocks[b].parent, make([]int, 0), witness})
+	p.blocks = append(p.blocks, block{begin, end, p.blocks[b].parent, make([]int, 0), w})
 	p.blocks[b].parent = parent
 
 	// Construct subblocks and move elements to them.
@@ -380,9 +384,14 @@ func (p *Partition) index(val int) int {
 // Witness returns a minimal-length sequence of function indexes that distinguishes the provided
 // pair of values, or nil if the values are in the same block. This is the sequence that is stored
 // on the LCA of the values' elements.
+// TODO: use unbuffered channel? -- Implement 'Sequence' package with compare utility.
 func (p *Partition) Witness(val, other int) []int {
 	lca := p.LCA(val, other)
-	return p.blocks[lca].witness
+	ret := make([]int, 0, len(p.blocks)) // TODO: keep track of height of tree?
+	for w := p.blocks[lca].witness; w != nil; w = w.suffix {
+		ret = append(ret, w.prefix)
+	}
+	return ret
 }
 
 // LCA returns the block that is the 'lowest common ancestor' of the provided values. This is the
