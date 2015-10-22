@@ -29,32 +29,35 @@ type (
 	Partition struct {
 		indices   []int     // a slice of indices to elements, indexed by integers [0,n).
 		elements  []element // a partition of the elements, and their blocks.
+		blocks    []block   // a slice of blocks/ nodes of the splitting tree, maximum length 2n-1.
 		splitters chan int  // a buffered channel of inner blocks that are 'splitgroups'.
 		size      int       // the number of (leaf) blocks in the partition.
-		blocks    []block   // a slice of blocks/ nodes of the splitting tree, maximum length 2n-1.
+		degree    int       // the maximum number of subblocks (children) for a block (inner node).
 	}
 	element struct {
 		value int
 		block int
 	}
 	block struct {
-		begin, end int   // interval of elements that belong to this block.
-		parent     int   // a pointer to the parent of this block
-		pivots     []int // can be used to infer intervals of (direct) children.
-		witness    []int // sequence that distinguishes pairs for which this block is the lca.
+		begin, end int           // interval of elements that belong to this block.
+		parent     int           // a pointer to the parent of this block
+		pivots     []int         // can be used to infer intervals of (direct) children.
+		witness    []int         // witness for pairs for which this block is the lca.
+		marks      map[int][]int // the 'temporary children' for this block.
 	}
 )
 
 // New constructs an initial partition for integers in the set [0,n). Two integers x and y
 // are in the same block if they belong to the same class for all provided functions. It is assumed
-// that the range of the class functions is [0, max) (i.e. f(x) < max for all x in [0,n)).
-func New(n int, max int, fs ...func(int) int) *Partition {
+// that the range of the class functions is [0, degree) (i.e. f(x) < degree for all x in [0,n)).
+func New(n int, degree int, fs ...func(int) int) *Partition {
 	// Initialize partition.
 	p := new(Partition)
 
 	p.blocks = make([]block, 1, 2*n-1)
-	p.blocks[0] = block{0, n, -1, nil, nil}
+	p.blocks[0] = block{0, n, -1, nil, nil, make(map[int][]int, degree)}
 	p.size = 1
+	p.degree = degree
 
 	p.indices = make([]int, n)
 	p.elements = make([]element, n)
@@ -68,7 +71,7 @@ func New(n int, max int, fs ...func(int) int) *Partition {
 	for prefix, class := range fs {
 		witness := []int{prefix}
 		for b := range p.Blocks(0, n) {
-			parent := p.split(b, max, class, witness)
+			parent := p.split(b, degree, class, witness)
 			if parent >= 0 {
 				p.splitters <- parent
 			}
@@ -129,16 +132,15 @@ done:
 				witness := append([]int{prefix}, p.blocks[splitter].witness...)
 
 				// Mark the predecessors of all but the largest subblock of the splitter.
-				marks := make([][][]int, len(p.blocks[splitter].pivots)+1)
+				//marks := make([]map[int][]int, len(p.blocks[splitter].pivots)+1)
 				// marks[class][block] is a list of values in block whose successors are in the class-th child of the splitter
 				count := make([]int, len(p.blocks))
 				// count[block] is the number of values in block that have been marked
 				markblocks := make([]int, 0, len(p.blocks))
-				for cls := 0; cls < len(marks); cls++ {
+				for cls := 0; cls < len(p.blocks[splitter].pivots)+1; cls++ {
 					if cls == largest {
 						continue
 					}
-					marks[cls] = make([][]int, len(p.blocks))
 					begin := p.blocks[splitter].begin
 					if cls != 0 {
 						begin = p.blocks[splitter].pivots[cls-1]
@@ -154,10 +156,10 @@ done:
 								// singleton block cannot be split
 								continue
 							}
-							marks[cls][b] = append(marks[cls][b], val)
 							if count[b] == 0 {
 								markblocks = append(markblocks, b)
 							}
+							p.blocks[b].marks[cls] = append(p.blocks[b].marks[cls], val)
 							count[b]++
 						}
 					}
@@ -180,15 +182,15 @@ done:
 					}
 
 					first := true
-					for cls := 0; cls < len(marks); cls++ {
-						if cls == largest || marks[cls][b] == nil {
-							// || len(marks[cls][b]) == 0
+					for cls := 0; cls < len(p.blocks[splitter].pivots)+1; cls++ {
+						if cls == largest || p.blocks[b].marks[cls] == nil || len(p.blocks[b].marks[cls]) == 0 {
 							continue
 						}
 						if first {
 							first = false
-							if len(marks[cls][b]) == p.blocks[parent].end-p.blocks[parent].begin {
+							if len(p.blocks[b].marks[cls]) == p.blocks[parent].end-p.blocks[parent].begin {
 								// not a real split
+								delete(p.blocks[b].marks, cls)
 								break
 							}
 							p.blocks[parent].witness = witness
@@ -201,10 +203,10 @@ done:
 							p.size++
 						}
 						sb := len(p.blocks)
-						p.blocks = append(p.blocks, block{pos, pos + len(marks[cls][b]), parent, nil, nil})
+						p.blocks = append(p.blocks, block{pos, pos + len(p.blocks[b].marks[cls]), parent, nil, nil, make(map[int][]int, p.degree)})
 
 						// Swap the value at the current pos with val and increase pos
-						for _, val := range marks[cls][b] {
+						for _, val := range p.blocks[b].marks[cls] {
 							i := p.index(val)
 							other := p.value(pos)
 							p.elements[pos] = element{val, sb}
@@ -213,6 +215,7 @@ done:
 							p.indices[other] = i
 							pos++
 						}
+						delete(p.blocks[b].marks, cls)
 					}
 				}
 				if p.size == n {
@@ -282,11 +285,11 @@ done:
 }
 
 // split puts the elements in block b in different subblocks based on the class of their value. It
-// is assumed that the range of the class function is [0, max). Returns the parent block identifier
+// is assumed that the range of the class function is [0, degree). Returns the parent block identifier
 // if the block was split, or -1 if it was not.
-func (p *Partition) split(b int, max int, class func(int) int, witness []int) (parent int) {
+func (p *Partition) split(b int, degree int, class func(int) int, witness []int) (parent int) {
 	parent = -1
-	refinement := make([][]int, max)
+	refinement := make([][]int, degree)
 	begin := p.blocks[b].begin
 	end := p.blocks[b].end
 	for i := begin; i < end; i++ {
@@ -302,20 +305,20 @@ func (p *Partition) split(b int, max int, class func(int) int, witness []int) (p
 
 	// A split has been made, so make a parent.
 	parent = len(p.blocks)
-	p.blocks = append(p.blocks, block{begin, end, p.blocks[b].parent, make([]int, 0), witness})
+	p.blocks = append(p.blocks, block{begin, end, p.blocks[b].parent, make([]int, 0), witness, nil})
 	p.blocks[b].parent = parent
 
 	// Construct subblocks and move elements to them.
 	pos := begin
 	first := true
-	for cls := 0; cls < max; cls++ {
+	for cls := 0; cls < degree; cls++ {
 		if len(refinement[cls]) == 0 {
 			continue
 		}
 		sb := b
 		if !first { // make a new block.
 			sb = len(p.blocks)
-			p.blocks = append(p.blocks, block{pos, pos + len(refinement[cls]), parent, nil, nil})
+			p.blocks = append(p.blocks, block{pos, pos + len(refinement[cls]), parent, nil, nil, make(map[int][]int, p.degree)})
 			p.blocks[parent].pivots = append(p.blocks[parent].pivots, pos)
 			p.size++
 		} else { // modify interval b == sb.
